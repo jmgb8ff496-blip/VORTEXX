@@ -1,0 +1,4 @@
+@tailwind base; @tailwind components; @tailwind utilities;
+html,body{background:#080B09;color:#F3F7F4;overflow-x:hidden;-webkit-tap-highlight-color:transparent}
+body{font-family:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",sans-serif;padding-top:env(safe-area-inset-top)}
+.pb-safe{padding-bottom:env(safe-area-inset-bottom)}
