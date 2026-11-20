@@ -14,13 +14,23 @@ export default function ProfilePage() {
   const [name, setName] = useState("");
   const [bio, setBio] = useState("");
   const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     (async () => {
-      const { data: { user } } = await sb.auth.getUser();
-      if (!user) return;
-      const { data } = await sb.from("profiles").select("id,username,display_name,bio").eq("id", user.id).single();
+      const { data: { user }, error: ue } = await sb.auth.getUser();
+      if (ue || !user) return setErr("Нет сессии. Выйдите и войдите заново.");
+      const sel = "id,username,display_name,bio";
+      let { data, error } = await sb.from("profiles").select(sel).eq("id", user.id).maybeSingle();
+      if (error) return setErr("Ошибка базы: " + error.message);
+      if (!data) {
+        const m = user.user_metadata ?? {};
+        const u = String(m.username || "user_" + user.id.replace(/-/g, "").slice(0, 8)).toLowerCase();
+        const ins = await sb.from("profiles").insert({ id: user.id, username: u, display_name: m.display_name || u }).select(sel).single();
+        if (ins.error) return setErr("Не удалось создать профиль: " + ins.error.message);
+        data = ins.data;
+      }
       if (data) { setP(data); setName(data.display_name); setBio(data.bio); }
     })();
   }, []);
@@ -39,6 +49,12 @@ export default function ProfilePage() {
     router.replace("/login"); router.refresh();
   }
 
+  if (err) return (
+    <div className="px-4 pt-8">
+      <p className="text-err">{err}</p>
+      <button onClick={logout} className="mt-4 rounded-xl border border-line px-4 py-2">Выйти</button>
+    </div>
+  );
   if (!p) return <div className="px-4 pt-8 text-muted">Загрузка…</div>;
   return (
     <div className="px-4 pt-6">
