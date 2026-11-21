@@ -18,7 +18,7 @@ export async function middleware(req: NextRequest) {
   const { data: { user } } = await sb.auth.getUser();
   const p = req.nextUrl.pathname;
   const isPublic = PUBLIC.some((x) => p.startsWith(x));
-  if (!user && !isPublic) return NextResponse.redirect(new URL("/login", req.url));
+  if (!user && !isPublic) { const u = new URL("/login", req.url); u.searchParams.set("next", p); return NextResponse.redirect(u); }
   if (user && (p === "/login" || p === "/register")) return NextResponse.redirect(new URL("/chats", req.url));
   return res;
 }

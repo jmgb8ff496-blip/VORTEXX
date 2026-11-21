@@ -2,15 +2,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import type { RealtimeChannel } from "@supabase/supabase-js";
-import { ArrowLeft, Send, X, Check, CheckCheck, Reply, Pencil, Trash2, Paperclip, Mic, Image as ImageIcon, FileText, Pause, Square } from "lucide-react";
+import { ArrowLeft, Send, X, Check, CheckCheck, Reply, Pencil, Trash2, Paperclip, Mic, Image as ImageIcon, FileText, Pause, Square, Info, Pin, PinOff } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import VoicePlayer from "@/components/VoicePlayer";
+import ChatInfo from "@/components/ChatInfo";
 
 type Msg = { id: string; chat_id: string; sender_id: string; body: string; reply_to: string | null; created_at: string; edited_at: string | null; deleted_at: string | null };
 type Re = { message_id: string; user_id: string; emoji: string };
 type Att = { id: string; message_id: string; chat_id: string; path: string; kind: "image" | "file" | "voice"; mime: string; name: string; size: number; duration_ms: number | null };
 type Prof = { display_name: string; username: string };
-type MemRow = { user_id: string; last_read_at: string; profiles: Prof | null };
+type MemRow = { user_id: string; role: string; last_read_at: string; profiles: Prof | null };
+type Chat = { id: string; type: "direct" | "group" | "channel"; title: string | null; description: string; slug: string | null; only_admins_post: boolean; pinned_message_id: string | null };
 const EMOJI = ["👍", "❤️", "😂", "🔥"];
 const MAX = 10 * 1024 * 1024;
 const IMG_OK = ["image/jpeg", "image/png", "image/webp", "image/gif"];
@@ -26,12 +28,15 @@ export default function ChatPage() {
   const router = useRouter();
   const sb = createClient();
   const [me, setMe] = useState("");
-  const [other, setOther] = useState<Prof | null>(null);
+  const [chat, setChat] = useState<Chat | null>(null);
+  const [members, setMembers] = useState<MemRow[]>([]);
+  const [info, setInfo] = useState(false);
+  const [count, setCount] = useState(0);
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [reacts, setReacts] = useState<Re[]>([]);
   const [atts, setAtts] = useState<Att[]>([]);
   const [urls, setUrls] = useState<Record<string, string>>({});
-  const [otherRead, setOtherRead] = useState(0);
+  const [reads, setReads] = useState<Record<string, number>>({});
   const [text, setText] = useState("");
   const [sel, setSel] = useState<Msg | null>(null);
   const [replyTo, setReplyTo] = useState<Msg | null>(null);
@@ -65,6 +70,14 @@ export default function ChatPage() {
     if (r.data) setReacts(r.data as Re[]);
   }, []);
 
+  const loadMembers = useCallback(async () => {
+    const mem = await sb.from("chat_members").select("user_id,role,last_read_at,profiles(display_name,username)").eq("chat_id", id);
+    const rows = (mem.data ?? []) as unknown as MemRow[];
+    setMembers(rows);
+    setReads(Object.fromEntries(rows.map((r) => [r.user_id, new Date(r.last_read_at).getTime()])));
+    return rows;
+  }, [id]);
+
   const sign = useCallback(async (list: Att[]) => {
     const need = list.map((a) => a.path).filter((p) => !urlsRef.current[p]);
     if (!need.length) return;
@@ -88,12 +101,13 @@ export default function ChatPage() {
       const { data: { user } } = await sb.auth.getUser();
       if (!user || !alive) return;
       setMe(user.id);
-      const mem = await sb.from("chat_members").select("user_id,last_read_at,profiles(display_name,username)").eq("chat_id", id);
-      if (mem.error) return setErr(mem.error.message);
-      const o = ((mem.data ?? []) as unknown as MemRow[]).find((m) => m.user_id !== user.id);
-      if (!o || !o.profiles) return setErr("Чат не найден");
-      setOther(o.profiles);
-      setOtherRead(new Date(o.last_read_at).getTime());
+      const cr = await sb.from("chats").select("id,type,title,description,slug,only_admins_post,pinned_message_id").eq("id", id).maybeSingle();
+      if (cr.error || !cr.data) return setErr(cr.error?.message ?? "Чат не найден");
+      const c = cr.data as Chat;
+      setChat(c);
+      const rows = await loadMembers();
+      if (c.type === "direct" && !rows.some((r) => r.user_id !== user.id)) return setErr("Чат не найден");
+      if (c.type === "channel") { const n = await sb.rpc("member_count", { cid: id }); setCount(Number(n.data ?? 0)); }
       const ms = await sb.from("messages").select("*").eq("chat_id", id).order("created_at", { ascending: false }).limit(100);
       if (ms.error) return setErr(ms.error.message);
       const list = ((ms.data ?? []) as Msg[]).reverse();
@@ -121,8 +135,9 @@ export default function ChatPage() {
         .on("postgres_changes", { event: "INSERT", schema: "public", table: "attachments", filter: `chat_id=eq.${id}` }, (p) => addAtt(p.new as Att))
         .on("postgres_changes", { event: "UPDATE", schema: "public", table: "chat_members", filter: `chat_id=eq.${id}` }, (p) => {
           const r = p.new as { user_id: string; last_read_at: string };
-          if (r.user_id !== user.id) setOtherRead(new Date(r.last_read_at).getTime());
+          if (r.user_id !== user.id) setReads((x) => ({ ...x, [r.user_id]: new Date(r.last_read_at).getTime() }));
         })
+        .on("postgres_changes", { event: "UPDATE", schema: "public", table: "chats", filter: `id=eq.${id}` }, (p) => setChat((x) => (x ? { ...x, ...(p.new as Partial<Chat>) } : x)))
         .on("broadcast", { event: "react" }, () => loadReacts())
         .on("broadcast", { event: "typing" }, () => {
           setTyping(true);
@@ -251,6 +266,12 @@ export default function ChatPage() {
     discardVoice();
   }
 
+  async function pin(m: Msg | null) {
+    setSel(null);
+    const { error } = await sb.rpc("pin_message", { cid: id, mid: m?.id ?? null });
+    if (error) return setErr("Не удалось закрепить: " + error.message);
+    setChat((x) => (x ? { ...x, pinned_message_id: m?.id ?? null } : x));
+  }
   async function remove(m: Msg) {
     setSel(null);
     const at = new Date().toISOString();
@@ -269,23 +290,44 @@ export default function ChatPage() {
     chRef.current?.send({ type: "broadcast", event: "react", payload: {} });
   }
 
-  if (!other) return (
+  if (!chat) return (
     <div className="mx-auto max-w-xl px-4 pt-8">
       <button onClick={() => router.push("/chats")} className="text-green">← Назад</button>
       <p className={`mt-4 ${err ? "text-err" : "text-muted"}`}>{err || "Загрузка…"}</p>
     </div>
   );
+  const isDirect = chat.type === "direct";
+  const isChannel = chat.type === "channel";
+  const otherM = members.find((m) => m.user_id !== me);
+  const myRole = members.find((m) => m.user_id === me)?.role ?? "member";
+  const isAdmin = myRole === "owner" || myRole === "admin";
+  const canPost = isDirect || (chat.type === "group" ? !chat.only_admins_post || isAdmin : isAdmin);
+  const title = isDirect ? otherM?.profiles?.display_name ?? "Чат" : chat.title ?? "Без названия";
+  const sub = typing ? (isDirect ? "печатает…" : "кто-то печатает…")
+    : isDirect ? "@" + (otherM?.profiles?.username ?? "")
+    : isChannel ? `подписчиков: ${count}` : `участников: ${members.length}`;
+  const others = members.filter((m) => m.user_id !== me);
+  const minRead = others.length ? Math.min(...others.map((m) => reads[m.user_id] ?? 0)) : 0;
+  const pinned = chat.pinned_message_id ? msgs.find((m) => m.id === chat.pinned_message_id) : undefined;
   const selHasAtt = sel ? atts.some((a) => a.message_id === sel.id) : false;
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="flex items-center gap-3 border-b border-line bg-bg2 px-3 py-3 md:px-6">
         <button onClick={() => router.push("/chats")} aria-label="Назад" className="p-1 text-green md:hidden"><ArrowLeft size={22} /></button>
-        <div className="grid h-9 w-9 place-items-center rounded-full bg-dgreen font-semibold">{other.display_name[0]?.toUpperCase()}</div>
-        <div className="min-w-0">
-          <div className="truncate font-medium leading-tight">{other.display_name}</div>
-          <div className={`text-xs ${typing ? "text-green" : "text-muted"}`}>{typing ? "печатает…" : "@" + other.username}</div>
-        </div>
+        <div className="grid h-9 w-9 place-items-center rounded-full bg-dgreen font-semibold">{title[0]?.toUpperCase()}</div>
+        <button disabled={isDirect} onClick={() => setInfo(true)} className="min-w-0 flex-1 text-left">
+          <div className="truncate font-medium leading-tight">{title}</div>
+          <div className={`text-xs ${typing ? "text-green" : "text-muted"}`}>{sub}</div>
+        </button>
+        {!isDirect && <button onClick={() => setInfo(true)} aria-label="Информация" className="text-muted"><Info size={22} /></button>}
       </header>
+      {chat.pinned_message_id && (
+        <button onClick={() => document.getElementById("m-" + chat.pinned_message_id)?.scrollIntoView({ block: "center" })}
+          className="flex items-center gap-2 border-b border-line bg-bg2 px-4 py-2 text-left text-sm">
+          <Pin size={16} className="shrink-0 text-green" />
+          <span className="truncate text-muted">{pinned ? (pinned.deleted_at ? "Сообщение удалено" : pinned.body) : "Закреплённое сообщение"}</span>
+        </button>
+      )}
       <div className="flex flex-1 flex-col gap-2 overflow-y-auto px-3 py-4 md:px-6">
         {msgs.length === 0 && <p className="m-auto text-sm text-muted">Сообщений пока нет. Напишите первым.</p>}
         {msgs.map((m) => {
@@ -297,11 +339,13 @@ export default function ChatPage() {
           reacts.filter((r) => r.message_id === m.id).forEach((r) => {
             g[r.emoji] = { n: (g[r.emoji]?.n ?? 0) + 1, mine: (g[r.emoji]?.mine ?? false) || r.user_id === me };
           });
-          const isRead = new Date(m.created_at).getTime() <= otherRead;
+          const isRead = minRead > 0 && new Date(m.created_at).getTime() <= minRead;
+          const sender = !mine && chat.type === "group" ? members.find((x) => x.user_id === m.sender_id)?.profiles?.display_name ?? "Бывший участник" : "";
           return (
-            <div key={m.id} className={`flex flex-col ${mine ? "items-end" : "items-start"}`}>
+            <div key={m.id} id={"m-" + m.id} className={`flex flex-col ${mine ? "items-end" : "items-start"}`}>
               <div onClick={() => !m.deleted_at && setSel(m)}
                 className={`max-w-[82%] cursor-pointer rounded-2xl px-3.5 py-2 text-left text-[15px] break-words md:max-w-[60%] ${mine ? "bg-dgreen" : "border border-line bg-card"} ${m.deleted_at ? "italic text-muted" : ""}`}>
+                {sender && <div className="mb-0.5 text-xs font-semibold text-green">{sender}</div>}
                 {rep && <div className="mb-1 truncate border-l-2 border-green pl-2 text-xs text-muted">{rep.deleted_at ? "Сообщение удалено" : rep.body}</div>}
                 {!m.deleted_at && at.map((a) => {
                   const u = urls[a.path];
@@ -323,7 +367,7 @@ export default function ChatPage() {
                 {(showBody || m.deleted_at) && <span className="whitespace-pre-wrap">{m.deleted_at ? "Сообщение удалено" : m.body}</span>}
                 <span className="ml-2 inline-flex items-center gap-1 align-bottom text-[11px] opacity-60">
                   {m.edited_at && !m.deleted_at && "изм."}{hm(m.created_at)}
-                  {mine && !m.deleted_at && (isRead ? <CheckCheck size={14} className="text-green" /> : <Check size={14} />)}
+                  {mine && !m.deleted_at && !isChannel && (isRead ? <CheckCheck size={14} className="text-green" /> : <Check size={14} />)}
                 </span>
               </div>
               {Object.keys(g).length > 0 && (
@@ -348,6 +392,9 @@ export default function ChatPage() {
           </div>
           <div className="mt-2 flex gap-5 text-sm">
             <button onClick={() => { setReplyTo(sel); setEditing(null); setSel(null); }} className="flex items-center gap-1 text-green"><Reply size={16} />Ответить</button>
+            {!isDirect && isAdmin && (chat.pinned_message_id === sel.id
+              ? <button onClick={() => pin(null)} className="flex items-center gap-1 text-green"><PinOff size={16} />Открепить</button>
+              : <button onClick={() => pin(sel)} className="flex items-center gap-1 text-green"><Pin size={16} />Закрепить</button>)}
             {sel.sender_id === me && <>
               {!selHasAtt && <button onClick={() => { setEditing(sel); setReplyTo(null); setText(sel.body); setSel(null); }} className="flex items-center gap-1 text-green"><Pencil size={16} />Изменить</button>}
               <button onClick={() => remove(sel)} className="flex items-center gap-1 text-err"><Trash2 size={16} />Удалить</button>
@@ -361,6 +408,9 @@ export default function ChatPage() {
           <button onClick={() => { setReplyTo(null); setEditing(null); setText(""); }} aria-label="Отмена" className="ml-auto"><X size={16} /></button>
         </div>
       )}
+      {!canPost ? (
+        <p className="border-t border-line bg-bg2 px-4 py-4 text-center text-sm text-muted pb-safe">{isChannel ? "В канале пишут только администраторы" : "Писать в группу могут только администраторы"}</p>
+      ) : <>
       {menu && rec === "idle" && (
         <div className="flex gap-6 border-t border-line bg-bg2 px-4 py-3 text-sm">
           <button onClick={() => imgRef.current?.click()} className="flex items-center gap-2 text-green"><ImageIcon size={20} />Фото</button>
@@ -396,6 +446,8 @@ export default function ChatPage() {
           </>)}
         </div>
       )}
+      </>}
+      {info && <ChatInfo chat={chat} members={members} me={me} count={count} onClose={() => setInfo(false)} onChanged={() => loadMembers()} onLeft={() => router.replace("/chats")} />}
     </div>
   );
 }

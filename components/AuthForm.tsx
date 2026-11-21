@@ -15,6 +15,8 @@ const ru = (m: string) =>
   : m;
 const input = "w-full rounded-xl border border-line bg-card px-4 py-3 text-base outline-none focus:border-green";
 
+const dest = () => { const n = new URLSearchParams(location.search).get("next"); return n && n.startsWith("/") && !n.startsWith("//") ? n : "/chats"; };
+
 export default function AuthForm({ mode }: { mode: Mode }) {
   const router = useRouter();
   const [email, setEmail] = useState("");
@@ -33,7 +35,7 @@ export default function AuthForm({ mode }: { mode: Mode }) {
       if (mode === "login") {
         const { error } = await sb.auth.signInWithPassword({ email, password });
         if (error) throw error;
-        router.replace("/chats"); router.refresh();
+        router.replace(dest()); router.refresh();
       } else if (mode === "register") {
         const u = username.trim().toLowerCase().replace(/^@/, "");
         if (!/^[a-z0-9_]{3,20}$/.test(u)) throw new Error("Username: 3–20 символов, латиница, цифры и _");
@@ -45,7 +47,7 @@ export default function AuthForm({ mode }: { mode: Mode }) {
           options: { data: { username: u, display_name: name.trim() || u }, emailRedirectTo: location.origin + "/auth/callback" },
         });
         if (error) throw error;
-        if (data.session) { router.replace("/chats"); router.refresh(); }
+        if (data.session) { router.replace(dest()); router.refresh(); }
         else setInfo("Мы отправили письмо. Подтвердите почту, затем войдите.");
       } else if (mode === "reset") {
         const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: location.origin + "/auth/callback?next=/update-password" });
@@ -55,7 +57,7 @@ export default function AuthForm({ mode }: { mode: Mode }) {
         if (password.length < 8) throw new Error("Пароль не короче 8 символов");
         const { error } = await sb.auth.updateUser({ password });
         if (error) throw error;
-        router.replace("/chats"); router.refresh();
+        router.replace(dest()); router.refresh();
       }
     } catch (e) { setErr(ru((e as Error).message)); }
     setBusy(false);
