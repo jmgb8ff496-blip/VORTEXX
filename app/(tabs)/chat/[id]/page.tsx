@@ -141,16 +141,16 @@ export default function ChatPage() {
     </div>
   );
   return (
-    <div className="mx-auto flex h-dvh max-w-xl flex-col">
-      <header className="flex items-center gap-3 border-b border-line bg-bg2 px-3 py-3">
-        <button onClick={() => router.push("/chats")} aria-label="Назад" className="p-1 text-green"><ArrowLeft size={22} /></button>
+    <div className="flex min-h-0 flex-1 flex-col">
+      <header className="flex items-center gap-3 border-b border-line bg-bg2 px-3 py-3 md:px-6">
+        <button onClick={() => router.push("/chats")} aria-label="Назад" className="p-1 text-green md:hidden"><ArrowLeft size={22} /></button>
         <div className="grid h-9 w-9 place-items-center rounded-full bg-dgreen font-semibold">{other.display_name[0]?.toUpperCase()}</div>
         <div className="min-w-0">
           <div className="truncate font-medium leading-tight">{other.display_name}</div>
           <div className={`text-xs ${typing ? "text-green" : "text-muted"}`}>{typing ? "печатает…" : "@" + other.username}</div>
         </div>
       </header>
-      <div className="flex flex-1 flex-col gap-2 overflow-y-auto px-3 py-4">
+      <div className="flex flex-1 flex-col gap-2 overflow-y-auto px-3 py-4 md:px-6">
         {msgs.length === 0 && <p className="m-auto text-sm text-muted">Сообщений пока нет. Напишите первым.</p>}
         {msgs.map((m) => {
           const mine = m.sender_id === me;
@@ -163,7 +163,7 @@ export default function ChatPage() {
           return (
             <div key={m.id} className={`flex flex-col ${mine ? "items-end" : "items-start"}`}>
               <button onClick={() => !m.deleted_at && setSel(m)}
-                className={`max-w-[82%] rounded-2xl px-3.5 py-2 text-left text-[15px] break-words ${mine ? "bg-dgreen" : "border border-line bg-card"} ${m.deleted_at ? "italic text-muted" : ""}`}>
+                className={`max-w-[82%] md:max-w-[60%] rounded-2xl px-3.5 py-2 text-left text-[15px] break-words ${mine ? "bg-dgreen" : "border border-line bg-card"} ${m.deleted_at ? "italic text-muted" : ""}`}>
                 {rep && <div className="mb-1 truncate border-l-2 border-green pl-2 text-xs text-muted">{rep.deleted_at ? "Сообщение удалено" : rep.body}</div>}
                 <span className="whitespace-pre-wrap">{m.deleted_at ? "Сообщение удалено" : m.body}</span>
                 <span className="ml-2 inline-flex items-center gap-1 align-bottom text-[11px] opacity-60">
@@ -205,7 +205,7 @@ export default function ChatPage() {
           <button onClick={() => { setReplyTo(null); setEditing(null); setText(""); }} aria-label="Отмена" className="ml-auto"><X size={16} /></button>
         </div>
       )}
-      <div className="flex items-center gap-2 border-t border-line bg-bg2 px-3 pt-2 pb-safe">
+      <div className="flex items-center gap-2 border-t border-line bg-bg2 px-3 pt-2 pb-safe md:px-6">
         <input value={text} onChange={(e) => onType(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} maxLength={4000}
           placeholder="Сообщение" className="my-2 min-w-0 flex-1 rounded-full border border-line bg-card px-4 py-2.5 text-base outline-none focus:border-green" />
         <button onClick={send} aria-label="Отправить" className="grid h-10 w-10 place-items-center rounded-full bg-green text-bg"><Send size={18} /></button>
