@@ -2,15 +2,24 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import type { RealtimeChannel } from "@supabase/supabase-js";
-import { ArrowLeft, Send, X, Check, CheckCheck, Reply, Pencil, Trash2 } from "lucide-react";
+import { ArrowLeft, Send, X, Check, CheckCheck, Reply, Pencil, Trash2, Paperclip, Mic, Image as ImageIcon, FileText, Pause, Square } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import VoicePlayer from "@/components/VoicePlayer";
 
 type Msg = { id: string; chat_id: string; sender_id: string; body: string; reply_to: string | null; created_at: string; edited_at: string | null; deleted_at: string | null };
 type Re = { message_id: string; user_id: string; emoji: string };
+type Att = { id: string; message_id: string; chat_id: string; path: string; kind: "image" | "file" | "voice"; mime: string; name: string; size: number; duration_ms: number | null };
 type Prof = { display_name: string; username: string };
 type MemRow = { user_id: string; last_read_at: string; profiles: Prof | null };
 const EMOJI = ["👍", "❤️", "😂", "🔥"];
+const MAX = 10 * 1024 * 1024;
+const IMG_OK = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+const FILE_OK = ["application/pdf", "text/plain", "application/zip",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"];
 const hm = (iso: string) => new Date(iso).toLocaleTimeString("ru", { hour: "2-digit", minute: "2-digit" });
+const fmtT = (ms: number) => `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}`;
+const fmtSize = (n: number) => (n > 1048576 ? (n / 1048576).toFixed(1) + " МБ" : Math.max(1, Math.round(n / 1024)) + " КБ");
 
 export default function ChatPage() {
   const { id } = useParams<{ id: string }>();
@@ -20,6 +29,8 @@ export default function ChatPage() {
   const [other, setOther] = useState<Prof | null>(null);
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [reacts, setReacts] = useState<Re[]>([]);
+  const [atts, setAtts] = useState<Att[]>([]);
+  const [urls, setUrls] = useState<Record<string, string>>({});
   const [otherRead, setOtherRead] = useState(0);
   const [text, setText] = useState("");
   const [sel, setSel] = useState<Msg | null>(null);
@@ -27,17 +38,47 @@ export default function ChatPage() {
   const [editing, setEditing] = useState<Msg | null>(null);
   const [typing, setTyping] = useState(false);
   const [err, setErr] = useState("");
+  const [menu, setMenu] = useState(false);
+  const [busyUp, setBusyUp] = useState(false);
+  const [rec, setRec] = useState<"idle" | "rec" | "paused" | "preview">("idle");
+  const [recMs, setRecMs] = useState(0);
+  const [voice, setVoice] = useState<{ blob: Blob; url: string; ms: number } | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const chRef = useRef<RealtimeChannel | null>(null);
   const idsRef = useRef<Set<string>>(new Set());
+  const urlsRef = useRef<Record<string, string>>({});
   const lastTyping = useRef(0);
   const typingTimer = useRef<ReturnType<typeof setTimeout>>();
+  const imgRef = useRef<HTMLInputElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const mrRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const chunks = useRef<Blob[]>([]);
+  const tick = useRef<ReturnType<typeof setInterval>>();
+  const msRef = useRef(0);
+  const cancelRef = useRef(false);
 
   const loadReacts = useCallback(async () => {
     const ids = [...idsRef.current];
     if (!ids.length) return setReacts([]);
     const r = await sb.from("message_reactions").select("message_id,user_id,emoji").in("message_id", ids);
     if (r.data) setReacts(r.data as Re[]);
+  }, []);
+
+  const sign = useCallback(async (list: Att[]) => {
+    const need = list.map((a) => a.path).filter((p) => !urlsRef.current[p]);
+    if (!need.length) return;
+    const { data } = await sb.storage.from("attachments").createSignedUrls(need, 21600);
+    if (!data) return;
+    const add: Record<string, string> = {};
+    data.forEach((d) => { if (d.path && d.signedUrl) add[d.path] = d.signedUrl; });
+    urlsRef.current = { ...urlsRef.current, ...add };
+    setUrls((u) => ({ ...u, ...add }));
+  }, []);
+
+  const addAtt = useCallback((a: Att) => {
+    setAtts((x) => (x.some((y) => y.id === a.id) ? x : [...x, a]));
+    sign([a]);
   }, []);
 
   useEffect(() => {
@@ -59,6 +100,12 @@ export default function ChatPage() {
       idsRef.current = new Set(list.map((m) => m.id));
       setMsgs(list);
       loadReacts();
+      if (list.length) {
+        const ar = await sb.from("attachments").select("*").in("message_id", list.map((m) => m.id));
+        const al = (ar.data ?? []) as Att[];
+        setAtts(al);
+        sign(al);
+      }
       sb.rpc("mark_chat_read", { cid: id });
       ch = sb.channel("chat:" + id)
         .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages", filter: `chat_id=eq.${id}` }, (p) => {
@@ -71,6 +118,7 @@ export default function ChatPage() {
           const m = p.new as Msg;
           setMsgs((x) => x.map((y) => (y.id === m.id ? m : y)));
         })
+        .on("postgres_changes", { event: "INSERT", schema: "public", table: "attachments", filter: `chat_id=eq.${id}` }, (p) => addAtt(p.new as Att))
         .on("postgres_changes", { event: "UPDATE", schema: "public", table: "chat_members", filter: `chat_id=eq.${id}` }, (p) => {
           const r = p.new as { user_id: string; last_read_at: string };
           if (r.user_id !== user.id) setOtherRead(new Date(r.last_read_at).getTime());
@@ -85,10 +133,15 @@ export default function ChatPage() {
       chRef.current = ch;
       if (!alive) sb.removeChannel(ch);
     })();
-    return () => { alive = false; if (ch) sb.removeChannel(ch); };
+    return () => {
+      alive = false;
+      if (ch) sb.removeChannel(ch);
+      clearInterval(tick.current);
+      streamRef.current?.getTracks().forEach((t) => t.stop());
+    };
   }, [id]);
 
-  useEffect(() => { endRef.current?.scrollIntoView({ block: "end" }); }, [msgs.length, typing]);
+  useEffect(() => { endRef.current?.scrollIntoView({ block: "end" }); }, [msgs.length, atts.length, typing]);
 
   function onType(v: string) {
     setText(v);
@@ -96,6 +149,15 @@ export default function ChatPage() {
       lastTyping.current = Date.now();
       chRef.current?.send({ type: "broadcast", event: "typing", payload: {} });
     }
+  }
+  async function post(body: string): Promise<Msg | null> {
+    const { data, error } = await sb.from("messages").insert({ chat_id: id, sender_id: me, body, reply_to: replyTo?.id ?? null }).select().single();
+    if (error) { setErr("Не отправлено: " + error.message); return null; }
+    setReplyTo(null);
+    const m = data as Msg;
+    idsRef.current.add(m.id);
+    setMsgs((x) => (x.some((y) => y.id === m.id) ? x : [...x, m]));
+    return m;
   }
   async function send() {
     const body = text.trim();
@@ -109,13 +171,86 @@ export default function ChatPage() {
       setMsgs((x) => x.map((y) => (y.id === m.id ? { ...y, body, edited_at: at } : y)));
       return;
     }
-    const { data, error } = await sb.from("messages").insert({ chat_id: id, sender_id: me, body, reply_to: replyTo?.id ?? null }).select().single();
-    setReplyTo(null);
-    if (error) { setErr("Не отправлено: " + error.message); setText(body); return; }
-    const m = data as Msg;
-    idsRef.current.add(m.id);
-    setMsgs((x) => (x.some((y) => y.id === m.id) ? x : [...x, m]));
+    if (!(await post(body))) setText(body);
   }
+  async function sendAttachment(file: Blob, kind: Att["kind"], name: string, mime: string, durationMs?: number) {
+    if (!me || busyUp) return;
+    if (file.size > MAX) return setErr("Файл больше 10 МБ");
+    setBusyUp(true); setErr(""); setMenu(false);
+    const ext = (name.split(".").pop() || "bin").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 8) || "bin";
+    const path = `${id}/${crypto.randomUUID()}.${ext}`;
+    const up = await sb.storage.from("attachments").upload(path, file, { contentType: mime });
+    if (up.error) { setBusyUp(false); return setErr("Не удалось загрузить файл: " + up.error.message); }
+    const caption = kind === "image" ? text.trim() : "";
+    const body = caption || (kind === "image" ? "📷 Фото" : kind === "voice" ? "🎤 Голосовое сообщение" : "📎 " + name.slice(0, 100));
+    const m = await post(body);
+    if (!m) { sb.storage.from("attachments").remove([path]); setBusyUp(false); return; }
+    if (caption) setText("");
+    const { data, error } = await sb.from("attachments").insert({
+      message_id: m.id, chat_id: id, path, kind, mime, name: name.slice(0, 200), size: file.size, duration_ms: durationMs ?? null,
+    }).select().single();
+    setBusyUp(false);
+    if (error) return setErr("Не удалось прикрепить файл: " + error.message);
+    addAtt(data as Att);
+  }
+  function onPick(e: React.ChangeEvent<HTMLInputElement>, kind: "image" | "file") {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
+    if (!(kind === "image" ? IMG_OK : FILE_OK).includes(f.type)) return setErr("Этот тип файла не поддерживается");
+    sendAttachment(f, kind, f.name, f.type);
+  }
+
+  async function startRec() {
+    setErr(""); setMenu(false);
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") return setErr("Браузер не поддерживает запись звука");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      const mt = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"].find((t) => MediaRecorder.isTypeSupported(t));
+      const mr = new MediaRecorder(stream, mt ? { mimeType: mt } : undefined);
+      chunks.current = []; msRef.current = 0; setRecMs(0); cancelRef.current = false;
+      mr.ondataavailable = (e) => { if (e.data.size) chunks.current.push(e.data); };
+      mr.onstop = () => {
+        stream.getTracks().forEach((t) => t.stop());
+        clearInterval(tick.current);
+        if (cancelRef.current) { setRec("idle"); return; }
+        const blob = new Blob(chunks.current, { type: mr.mimeType || mt || "audio/mp4" });
+        setVoice({ blob, url: URL.createObjectURL(blob), ms: msRef.current });
+        setRec("preview");
+      };
+      mr.start();
+      mrRef.current = mr;
+      setRec("rec");
+      tick.current = setInterval(() => {
+        if (mrRef.current?.state === "recording") {
+          msRef.current += 250; setRecMs(msRef.current);
+          if (msRef.current >= 300000) mrRef.current.stop();
+        }
+      }, 250);
+    } catch {
+      setErr("Нет доступа к микрофону. Разрешите его для сайта в настройках Safari.");
+    }
+  }
+  const stopRec = () => mrRef.current?.stop();
+  const cancelRec = () => { cancelRef.current = true; mrRef.current?.stop(); };
+  function togglePause() {
+    const mr = mrRef.current;
+    if (!mr) return;
+    if (mr.state === "recording") { mr.pause(); setRec("paused"); } else if (mr.state === "paused") { mr.resume(); setRec("rec"); }
+  }
+  function discardVoice() {
+    if (voice) URL.revokeObjectURL(voice.url);
+    setVoice(null); setRec("idle");
+  }
+  async function sendVoice() {
+    if (!voice) return;
+    const mime = (voice.blob.type || "audio/mp4").split(";")[0];
+    const ext = mime.includes("webm") ? "webm" : mime.includes("ogg") ? "ogg" : "m4a";
+    await sendAttachment(voice.blob, "voice", `voice.${ext}`, mime, voice.ms);
+    discardVoice();
+  }
+
   async function remove(m: Msg) {
     setSel(null);
     const at = new Date().toISOString();
@@ -140,6 +275,7 @@ export default function ChatPage() {
       <p className={`mt-4 ${err ? "text-err" : "text-muted"}`}>{err || "Загрузка…"}</p>
     </div>
   );
+  const selHasAtt = sel ? atts.some((a) => a.message_id === sel.id) : false;
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="flex items-center gap-3 border-b border-line bg-bg2 px-3 py-3 md:px-6">
@@ -155,6 +291,8 @@ export default function ChatPage() {
         {msgs.map((m) => {
           const mine = m.sender_id === me;
           const rep = m.reply_to ? msgs.find((x) => x.id === m.reply_to) : undefined;
+          const at = atts.filter((a) => a.message_id === m.id);
+          const showBody = !at.length || (at[0].kind === "image" && m.body !== "📷 Фото");
           const g: Record<string, { n: number; mine: boolean }> = {};
           reacts.filter((r) => r.message_id === m.id).forEach((r) => {
             g[r.emoji] = { n: (g[r.emoji]?.n ?? 0) + 1, mine: (g[r.emoji]?.mine ?? false) || r.user_id === me };
@@ -162,15 +300,32 @@ export default function ChatPage() {
           const isRead = new Date(m.created_at).getTime() <= otherRead;
           return (
             <div key={m.id} className={`flex flex-col ${mine ? "items-end" : "items-start"}`}>
-              <button onClick={() => !m.deleted_at && setSel(m)}
-                className={`max-w-[82%] md:max-w-[60%] rounded-2xl px-3.5 py-2 text-left text-[15px] break-words ${mine ? "bg-dgreen" : "border border-line bg-card"} ${m.deleted_at ? "italic text-muted" : ""}`}>
+              <div onClick={() => !m.deleted_at && setSel(m)}
+                className={`max-w-[82%] cursor-pointer rounded-2xl px-3.5 py-2 text-left text-[15px] break-words md:max-w-[60%] ${mine ? "bg-dgreen" : "border border-line bg-card"} ${m.deleted_at ? "italic text-muted" : ""}`}>
                 {rep && <div className="mb-1 truncate border-l-2 border-green pl-2 text-xs text-muted">{rep.deleted_at ? "Сообщение удалено" : rep.body}</div>}
-                <span className="whitespace-pre-wrap">{m.deleted_at ? "Сообщение удалено" : m.body}</span>
+                {!m.deleted_at && at.map((a) => {
+                  const u = urls[a.path];
+                  if (a.kind === "image") return (
+                    <a key={a.id} href={u} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
+                      {u ? <img src={u} alt={a.name} className="mb-1 max-h-72 max-w-full rounded-xl object-cover" /> : <div className="mb-1 h-40 w-48 animate-pulse rounded-xl bg-bg2" />}
+                    </a>
+                  );
+                  if (a.kind === "voice") return u
+                    ? <VoicePlayer key={a.id} src={u} durationMs={a.duration_ms ?? 0} />
+                    : <span key={a.id} className="text-sm text-muted">Загрузка…</span>;
+                  return (
+                    <a key={a.id} href={u} download={a.name} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="flex items-center gap-2">
+                      <FileText size={24} className="shrink-0 text-green" />
+                      <span className="min-w-0"><span className="block truncate text-sm">{a.name}</span><span className="text-xs opacity-60">{fmtSize(a.size)}</span></span>
+                    </a>
+                  );
+                })}
+                {(showBody || m.deleted_at) && <span className="whitespace-pre-wrap">{m.deleted_at ? "Сообщение удалено" : m.body}</span>}
                 <span className="ml-2 inline-flex items-center gap-1 align-bottom text-[11px] opacity-60">
                   {m.edited_at && !m.deleted_at && "изм."}{hm(m.created_at)}
                   {mine && !m.deleted_at && (isRead ? <CheckCheck size={14} className="text-green" /> : <Check size={14} />)}
                 </span>
-              </button>
+              </div>
               {Object.keys(g).length > 0 && (
                 <div className="mt-1 flex gap-1">
                   {Object.entries(g).map(([e, v]) => (
@@ -184,6 +339,7 @@ export default function ChatPage() {
         <div ref={endRef} />
       </div>
       {err && <p className="px-4 pb-1 text-sm text-err">{err}</p>}
+      {busyUp && <p className="px-4 pb-1 text-sm text-muted">Отправка файла…</p>}
       {sel && (
         <div className="border-t border-line bg-bg2 px-3 py-2">
           <div className="flex items-center gap-3">
@@ -193,7 +349,7 @@ export default function ChatPage() {
           <div className="mt-2 flex gap-5 text-sm">
             <button onClick={() => { setReplyTo(sel); setEditing(null); setSel(null); }} className="flex items-center gap-1 text-green"><Reply size={16} />Ответить</button>
             {sel.sender_id === me && <>
-              <button onClick={() => { setEditing(sel); setReplyTo(null); setText(sel.body); setSel(null); }} className="flex items-center gap-1 text-green"><Pencil size={16} />Изменить</button>
+              {!selHasAtt && <button onClick={() => { setEditing(sel); setReplyTo(null); setText(sel.body); setSel(null); }} className="flex items-center gap-1 text-green"><Pencil size={16} />Изменить</button>}
               <button onClick={() => remove(sel)} className="flex items-center gap-1 text-err"><Trash2 size={16} />Удалить</button>
             </>}
           </div>
@@ -205,11 +361,41 @@ export default function ChatPage() {
           <button onClick={() => { setReplyTo(null); setEditing(null); setText(""); }} aria-label="Отмена" className="ml-auto"><X size={16} /></button>
         </div>
       )}
-      <div className="flex items-center gap-2 border-t border-line bg-bg2 px-3 pt-2 pb-safe md:px-6">
-        <input value={text} onChange={(e) => onType(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} maxLength={4000}
-          placeholder="Сообщение" className="my-2 min-w-0 flex-1 rounded-full border border-line bg-card px-4 py-2.5 text-base outline-none focus:border-green" />
-        <button onClick={send} aria-label="Отправить" className="grid h-10 w-10 place-items-center rounded-full bg-green text-bg"><Send size={18} /></button>
-      </div>
+      {menu && rec === "idle" && (
+        <div className="flex gap-6 border-t border-line bg-bg2 px-4 py-3 text-sm">
+          <button onClick={() => imgRef.current?.click()} className="flex items-center gap-2 text-green"><ImageIcon size={20} />Фото</button>
+          <button onClick={() => fileRef.current?.click()} className="flex items-center gap-2 text-green"><FileText size={20} />Файл</button>
+        </div>
+      )}
+      <input ref={imgRef} type="file" accept="image/*" className="hidden" onChange={(e) => onPick(e, "image")} />
+      <input ref={fileRef} type="file" accept=".pdf,.txt,.zip,.docx,.xlsx" className="hidden" onChange={(e) => onPick(e, "file")} />
+      {rec === "idle" ? (
+        <div className="flex items-center gap-2 border-t border-line bg-bg2 px-3 pt-2 pb-safe md:px-6">
+          <button onClick={() => setMenu((v) => !v)} aria-label="Прикрепить" className="p-1 text-muted"><Paperclip size={22} /></button>
+          <input value={text} onChange={(e) => onType(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} maxLength={4000}
+            placeholder="Сообщение" className="my-2 min-w-0 flex-1 rounded-full border border-line bg-card px-4 py-2.5 text-base outline-none focus:border-green" />
+          {text.trim()
+            ? <button onClick={send} aria-label="Отправить" className="grid h-10 w-10 place-items-center rounded-full bg-green text-bg"><Send size={18} /></button>
+            : <button onClick={startRec} aria-label="Записать голосовое" className="grid h-10 w-10 place-items-center rounded-full bg-green text-bg"><Mic size={18} /></button>}
+        </div>
+      ) : (
+        <div className="flex items-center gap-3 border-t border-line bg-bg2 px-3 py-3 pb-safe md:px-6">
+          {rec === "preview" && voice ? (<>
+            <button onClick={discardVoice} aria-label="Удалить запись" className="text-err"><Trash2 size={22} /></button>
+            <div className="flex-1"><VoicePlayer src={voice.url} durationMs={voice.ms} /></div>
+            <button onClick={sendVoice} disabled={busyUp} aria-label="Отправить" className="grid h-10 w-10 place-items-center rounded-full bg-green text-bg disabled:opacity-60"><Send size={18} /></button>
+          </>) : (<>
+            <button onClick={cancelRec} aria-label="Отменить запись" className="text-err"><X size={22} /></button>
+            <span className={`h-2.5 w-2.5 rounded-full bg-err ${rec === "rec" ? "animate-pulse" : ""}`} />
+            <span className="tabular-nums">{fmtT(recMs)}</span>
+            <span className="text-sm text-muted">{rec === "paused" ? "Пауза" : "Запись…"}</span>
+            <button onClick={togglePause} aria-label={rec === "paused" ? "Продолжить" : "Пауза"} className="ml-auto grid h-10 w-10 place-items-center rounded-full border border-line">
+              {rec === "paused" ? <Mic size={18} /> : <Pause size={18} />}
+            </button>
+            <button onClick={stopRec} aria-label="Стоп" className="grid h-10 w-10 place-items-center rounded-full bg-green text-bg"><Square size={16} /></button>
+          </>)}
+        </div>
+      )}
     </div>
   );
 }
