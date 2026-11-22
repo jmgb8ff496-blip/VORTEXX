@@ -33,7 +33,7 @@ export default function StoriesBar() {
     if (!user) return;
     const [p, r, v] = await Promise.all([
       sb.from("profiles").select("id,display_name,avatar_url").eq("id", user.id).maybeSingle(),
-      sb.from("stories").select("id,user_id,media_path,media_kind,caption,created_at,profiles(id,display_name,avatar_url)")
+      sb.from("stories").select("id,user_id,media_path,media_kind,caption,created_at,profiles!user_id(id_display_name,avatar_url)")
         .gt("expires_at", new Date().toISOString()).order("created_at", { ascending: true }),
       sb.from("story_views").select("story_id").eq("viewer_id", user.id),
     ]);
