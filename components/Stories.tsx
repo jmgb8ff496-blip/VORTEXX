@@ -25,6 +25,8 @@ export default function StoriesBar() {
   const [groups, setGroups] = useState<Group[]>([]);
   const [open, setOpen] = useState<Group | null>(null);
   const [compose, setCompose] = useState(false);
+  const [err, setErr] = useState("");
+  const openMineRef = useRef(false);
 
   const load = useCallback(async () => {
     const { data: { user } } = await sb.auth.getUser();
@@ -35,6 +37,7 @@ export default function StoriesBar() {
         .gt("expires_at", new Date().toISOString()).order("created_at", { ascending: true }),
       sb.from("story_views").select("story_id").eq("viewer_id", user.id),
     ]);
+    if (r.error) setErr("Истории: " + r.error.message); else setErr("");
     if (p.data) setMe(p.data as Author);
     const seenIds = new Set(((v.data ?? []) as { story_id: string }[]).map((x) => x.story_id));
     const map = new Map<string, Group>();
@@ -46,6 +49,11 @@ export default function StoriesBar() {
       map.set(s.user_id, g);
     });
     setGroups([...map.values()]);
+    if (openMineRef.current) {
+      openMineRef.current = false;
+      const g = map.get(user.id);
+      if (g) setOpen(g); else setErr("История загружена, но не отображается. Обновите страницу.");
+    }
   }, []);
   useEffect(() => { load(); }, []);
 
@@ -68,8 +76,9 @@ export default function StoriesBar() {
           </button>
         ))}
       </div>
+      {err && <p className="mt-2 text-xs text-err">{err}</p>}
       {open && <StoryViewer group={open} me={me?.id ?? ""} onClose={() => { setOpen(null); load(); }} />}
-      {compose && <StoryComposer me={me?.id ?? ""} onClose={() => setCompose(false)} onDone={() => { setCompose(false); load(); }} />}
+      {compose && <StoryComposer me={me?.id ?? ""} onClose={() => setCompose(false)} onDone={() => { setCompose(false); openMineRef.current = true; load(); }} />}
     </>
   );
 }
@@ -219,7 +228,11 @@ function StoryComposer({ me, onClose, onDone }: { me: string; onClose: () => voi
     setErr(""); setFile(f); setPreview(URL.createObjectURL(f));
   }
   async function publish() {
-    if (!file || !me) return;
+    try { await publishInner(); } catch (x) { setBusy(false); setErr("Ошибка: " + (x as Error).message); }
+  }
+  async function publishInner() {
+    if (!file) return;
+    if (!me) return setErr("Профиль ещё загружается, попробуйте ещё раз через секунду");
     setBusy(true); setErr("");
     const path = `${me}/${crypto.randomUUID()}.${MIME[file.type]}`;
     const up = await sb.storage.from("stories").upload(path, file, { contentType: file.type });
