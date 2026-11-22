@@ -1,4 +1,15 @@
 @tailwind base; @tailwind components; @tailwind utilities;
+:root{--accent:57 232 121;--accent-dark:20 122 64}
 html,body{background:#080B09;color:#F3F7F4;overflow-x:hidden;-webkit-tap-highlight-color:transparent}
 body{font-family:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",sans-serif;padding-top:env(safe-area-inset-top)}
 .pb-safe{padding-bottom:env(safe-area-inset-bottom)}
+button:not(:disabled){transition:transform .12s ease,opacity .15s ease,background-color .2s ease,color .2s ease}
+button:not(:disabled):active{transform:scale(.96)}
+a{transition:opacity .15s ease,background-color .2s ease}
+@keyframes shimmer{from{background-position:-200% 0}to{background-position:200% 0}}
+@keyframes bounceDot{0%,80%,100%{transform:translateY(0);opacity:.4}40%{transform:translateY(-3px);opacity:1}}
+.skeleton{background:linear-gradient(90deg,#151D18 25%,#1f2b24 50%,#151D18 75%);background-size:200% 100%;animation:shimmer 1.4s linear infinite;border-radius:12px}
+.dots i{display:inline-block;width:4px;height:4px;margin:0 1px;border-radius:9999px;background:currentColor;animation:bounceDot 1s infinite}
+.dots i:nth-child(2){animation-delay:.15s}
+.dots i:nth-child(3){animation-delay:.3s}
+@media (prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}

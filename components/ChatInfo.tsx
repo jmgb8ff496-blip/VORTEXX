@@ -50,8 +50,8 @@ export default function ChatInfo({ chat, members, me, count, onClose, onChanged,
   const showList = !isChannel || isAdmin;
 
   return (
-    <div className="fixed inset-0 z-30 bg-black/60" onClick={onClose}>
-      <div className="absolute right-0 top-0 h-full w-full max-w-sm overflow-y-auto bg-bg2 p-4 pb-safe" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-30 animate-fade bg-black/60" onClick={onClose}>
+      <div className="absolute right-0 top-0 h-full w-full max-w-sm animate-sheet overflow-y-auto bg-bg2 p-4 pb-safe" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold">{isChannel ? "О канале" : "О группе"}</h2>
           <button onClick={onClose} aria-label="Закрыть"><X size={22} /></button>

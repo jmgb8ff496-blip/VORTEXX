@@ -3,8 +3,9 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Search } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import Avatar from "@/components/Avatar";
 
-type R = { id: string; username: string; display_name: string };
+type R = { id: string; username: string; display_name: string; avatar_url: string | null };
 
 export default function ContactsPage() {
   const sb = createClient();
@@ -20,7 +21,7 @@ export default function ContactsPage() {
     if (t.length < 2) { setRes([]); setDone(false); return; }
     const h = setTimeout(async () => {
       const { data: { user } } = await sb.auth.getUser();
-      const { data } = await sb.from("profiles").select("id,username,display_name").ilike("username", t + "%").limit(20);
+      const { data } = await sb.from("profiles").select("id,username,display_name,avatar_url").ilike("username", t + "%").limit(20);
       setRes(((data ?? []) as R[]).filter((r) => r.id !== user?.id)); setDone(true);
     }, 300);
     return () => clearTimeout(h);
@@ -44,9 +45,9 @@ export default function ContactsPage() {
       {err && <p className="mt-3 text-sm text-err">{err}</p>}
       <ul className="mt-3 divide-y divide-line">
         {res.map((r) => (
-          <li key={r.id}>
+          <li key={r.id} className="animate-page">
             <button onClick={() => start(r.id)} disabled={busy === r.id} className="flex w-full items-center gap-3 py-3 text-left active:opacity-70">
-              <div className="grid h-11 w-11 place-items-center rounded-full bg-dgreen font-semibold">{r.display_name[0]?.toUpperCase()}</div>
+              <Avatar path={r.avatar_url} name={r.display_name} size={44} />
               <div><div className="font-medium">{r.display_name}</div><div className="text-sm text-muted">@{r.username}</div></div>
             </button>
           </li>

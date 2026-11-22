@@ -6,11 +6,12 @@ import { ArrowLeft, Send, X, Check, CheckCheck, Reply, Pencil, Trash2, Paperclip
 import { createClient } from "@/lib/supabase/client";
 import VoicePlayer from "@/components/VoicePlayer";
 import ChatInfo from "@/components/ChatInfo";
+import Avatar from "@/components/Avatar";
 
 type Msg = { id: string; chat_id: string; sender_id: string; body: string; reply_to: string | null; created_at: string; edited_at: string | null; deleted_at: string | null };
 type Re = { message_id: string; user_id: string; emoji: string };
 type Att = { id: string; message_id: string; chat_id: string; path: string; kind: "image" | "file" | "voice"; mime: string; name: string; size: number; duration_ms: number | null };
-type Prof = { display_name: string; username: string };
+type Prof = { display_name: string; username: string; avatar_url: string | null; last_seen: string | null };
 type MemRow = { user_id: string; role: string; last_read_at: string; profiles: Prof | null };
 type Chat = { id: string; type: "direct" | "group" | "channel"; title: string | null; description: string; slug: string | null; only_admins_post: boolean; pinned_message_id: string | null };
 const EMOJI = ["👍", "❤️", "😂", "🔥"];
@@ -71,7 +72,7 @@ export default function ChatPage() {
   }, []);
 
   const loadMembers = useCallback(async () => {
-    const mem = await sb.from("chat_members").select("user_id,role,last_read_at,profiles(display_name,username)").eq("chat_id", id);
+    const mem = await sb.from("chat_members").select("user_id,role,last_read_at,profiles(display_name,username,avatar_url,last_seen)").eq("chat_id", id);
     const rows = (mem.data ?? []) as unknown as MemRow[];
     setMembers(rows);
     setReads(Object.fromEntries(rows.map((r) => [r.user_id, new Date(r.last_read_at).getTime()])));
@@ -120,13 +121,13 @@ export default function ChatPage() {
         setAtts(al);
         sign(al);
       }
-      sb.rpc("mark_chat_read", { cid: id });
+      sb.rpc("mark_chat_read", { cid: id }).then(() => {});
       ch = sb.channel("chat:" + id)
         .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages", filter: `chat_id=eq.${id}` }, (p) => {
           const m = p.new as Msg;
           idsRef.current.add(m.id);
           setMsgs((x) => (x.some((y) => y.id === m.id) ? x : [...x, m]));
-          if (m.sender_id !== user.id) sb.rpc("mark_chat_read", { cid: id });
+          if (m.sender_id !== user.id) sb.rpc("mark_chat_read", { cid: id }).then(() => {});
         })
         .on("postgres_changes", { event: "UPDATE", schema: "public", table: "messages", filter: `chat_id=eq.${id}` }, (p) => {
           const m = p.new as Msg;
@@ -155,6 +156,8 @@ export default function ChatPage() {
       streamRef.current?.getTracks().forEach((t) => t.stop());
     };
   }, [id]);
+
+  useEffect(() => { const t = setInterval(() => { loadMembers(); }, 30000); return () => clearInterval(t); }, [id]);
 
   useEffect(() => { endRef.current?.scrollIntoView({ block: "end" }); }, [msgs.length, atts.length, typing]);
 
@@ -303,8 +306,8 @@ export default function ChatPage() {
   const isAdmin = myRole === "owner" || myRole === "admin";
   const canPost = isDirect || (chat.type === "group" ? !chat.only_admins_post || isAdmin : isAdmin);
   const title = isDirect ? otherM?.profiles?.display_name ?? "Чат" : chat.title ?? "Без названия";
-  const sub = typing ? (isDirect ? "печатает…" : "кто-то печатает…")
-    : isDirect ? "@" + (otherM?.profiles?.username ?? "")
+  const online = isDirect && !!otherM?.profiles?.last_seen && Date.now() - new Date(otherM.profiles.last_seen).getTime() < 120000;
+  const sub = isDirect ? (online ? "в сети" : "@" + (otherM?.profiles?.username ?? ""))
     : isChannel ? `подписчиков: ${count}` : `участников: ${members.length}`;
   const others = members.filter((m) => m.user_id !== me);
   const minRead = others.length ? Math.min(...others.map((m) => reads[m.user_id] ?? 0)) : 0;
@@ -314,10 +317,10 @@ export default function ChatPage() {
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="flex items-center gap-3 border-b border-line bg-bg2 px-3 py-3 md:px-6">
         <button onClick={() => router.push("/chats")} aria-label="Назад" className="p-1 text-green md:hidden"><ArrowLeft size={22} /></button>
-        <div className="grid h-9 w-9 place-items-center rounded-full bg-dgreen font-semibold">{title[0]?.toUpperCase()}</div>
-        <button disabled={isDirect} onClick={() => setInfo(true)} className="min-w-0 flex-1 text-left">
+        <Avatar path={isDirect ? otherM?.profiles?.avatar_url : null} name={title} size={36} />
+        <button onClick={() => (isDirect ? otherM && router.push("/user/" + otherM.user_id) : setInfo(true))} className="min-w-0 flex-1 text-left">
           <div className="truncate font-medium leading-tight">{title}</div>
-          <div className={`text-xs ${typing ? "text-green" : "text-muted"}`}>{sub}</div>
+          <div className={`text-xs ${typing || online ? "text-green" : "text-muted"}`}>{typing ? <>{isDirect ? "печатает" : "кто-то печатает"}<span className="dots ml-1"><i /><i /><i /></span></> : sub}</div>
         </button>
         {!isDirect && <button onClick={() => setInfo(true)} aria-label="Информация" className="text-muted"><Info size={22} /></button>}
       </header>
@@ -344,7 +347,7 @@ export default function ChatPage() {
           return (
             <div key={m.id} id={"m-" + m.id} className={`flex flex-col ${mine ? "items-end" : "items-start"}`}>
               <div onClick={() => !m.deleted_at && setSel(m)}
-                className={`max-w-[82%] cursor-pointer rounded-2xl px-3.5 py-2 text-left text-[15px] break-words md:max-w-[60%] ${mine ? "bg-dgreen" : "border border-line bg-card"} ${m.deleted_at ? "italic text-muted" : ""}`}>
+                className={`max-w-[82%] cursor-pointer rounded-2xl px-3.5 py-2 text-left text-[15px] break-words md:max-w-[60%] ${Date.now() - new Date(m.created_at).getTime() < 8000 ? "animate-pop" : ""} ${mine ? "bg-dgreen" : "border border-line bg-card"} ${m.deleted_at ? "italic text-muted" : ""}`}>
                 {sender && <div className="mb-0.5 text-xs font-semibold text-green">{sender}</div>}
                 {rep && <div className="mb-1 truncate border-l-2 border-green pl-2 text-xs text-muted">{rep.deleted_at ? "Сообщение удалено" : rep.body}</div>}
                 {!m.deleted_at && at.map((a) => {
@@ -373,7 +376,7 @@ export default function ChatPage() {
               {Object.keys(g).length > 0 && (
                 <div className="mt-1 flex gap-1">
                   {Object.entries(g).map(([e, v]) => (
-                    <button key={e} onClick={() => react(m, e)} className={`rounded-full border px-2 py-0.5 text-xs ${v.mine ? "border-green" : "border-line"}`}>{e} {v.n}</button>
+                    <button key={e} onClick={() => react(m, e)} className={`animate-pop rounded-full border px-2 py-0.5 text-xs ${v.mine ? "border-green" : "border-line"}`}>{e} {v.n}</button>
                   ))}
                 </div>
               )}
@@ -385,7 +388,7 @@ export default function ChatPage() {
       {err && <p className="px-4 pb-1 text-sm text-err">{err}</p>}
       {busyUp && <p className="px-4 pb-1 text-sm text-muted">Отправка файла…</p>}
       {sel && (
-        <div className="border-t border-line bg-bg2 px-3 py-2">
+        <div className="animate-page border-t border-line bg-bg2 px-3 py-2">
           <div className="flex items-center gap-3">
             {EMOJI.map((e) => <button key={e} onClick={() => react(sel, e)} className="text-2xl">{e}</button>)}
             <button onClick={() => setSel(null)} aria-label="Закрыть" className="ml-auto text-muted"><X size={20} /></button>

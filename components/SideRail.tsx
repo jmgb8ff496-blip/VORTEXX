@@ -11,7 +11,7 @@ export default function SideRail() {
         const on = isActive(path, href);
         return (
           <Link key={href} href={href} className={`flex w-16 flex-col items-center gap-1 rounded-xl py-2 text-[11px] transition-colors ${on ? "bg-card text-green" : "text-muted hover:text-ink"}`}>
-            <Icon size={22} strokeWidth={on ? 2.4 : 1.8} />{label}
+            <Icon size={22} strokeWidth={on ? 2.4 : 1.8} className={`transition-transform duration-200 ${on ? "scale-110" : ""}`} />{label}
           </Link>
         );
       })}

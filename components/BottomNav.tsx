@@ -12,7 +12,7 @@ export default function BottomNav() {
           return (
             <li key={href} className="flex-1">
               <Link href={href} className={`flex flex-col items-center gap-1 py-2.5 text-[11px] transition-colors ${on ? "text-green" : "text-muted"}`}>
-                <Icon size={22} strokeWidth={on ? 2.4 : 1.8} />{label}
+                <Icon size={22} strokeWidth={on ? 2.4 : 1.8} className={`transition-transform duration-200 ${on ? "scale-110" : ""}`} />{label}
               </Link>
             </li>
           );
